@@ -1,0 +1,308 @@
+# ==============================================================================
+# values-staging.yaml — 万象积木 测试环境覆盖配置
+# 使用方式: helm install wanxiang ./deploy -f ./deploy/values-staging.yaml
+# ==============================================================================
+
+# === 全局 ===
+global:
+  environment: staging
+  tenantMode: single
+  logLevel: debug
+  imagePullPolicy: Always
+  imageRegistry: registry-staging.wanxiang.ai
+  imageTag: ""                   # CI 中设置为 commit SHA
+  imagePullSecrets:
+    - name: registry-credentials
+
+  serviceMesh:
+    enabled: false
+    mtls: false
+
+  vault:
+    enabled: false
+    address: ""
+    role: wanxiang-jimu-staging
+
+# === 命名空间 ===
+namespace:
+  create: true
+  name: wanxiang-staging
+
+# === API Server ===
+apiServer:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-api-server
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  env:
+    - name: APP_ENV
+      value: "staging"
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: database-url
+    - name: REDIS_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: redis-url
+    - name: QDRANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: qdrant-url
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  canary:
+    enabled: false
+    weight: 100
+
+# === Gateway ===
+gateway:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-gateway
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  service:
+    type: ClusterIP
+    port: 8001
+    targetPort: 8001
+
+# === NLU Service ===
+nluService:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+# === Model Router ===
+modelRouter:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+# === Agent Orchestrator ===
+agentOrchestrator:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 75
+  timeoutSeconds: 120
+  maxConcurrentPlans: 20
+
+# === RAG Service ===
+ragService:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+# === Embedding Service ===
+embeddingService:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilization: 80
+
+# === SD Service (GPU) — 测试环境关闭以节省资源 ===
+sdService:
+  enabled: false
+
+# === Tool Sandbox ===
+toolSandbox:
+  enabled: true
+  replicaCount: 2
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilization: 80
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  limits:
+    maxExecutionTime: 15
+    maxMemoryMB: 256
+    maxDiskMB: 50
+
+# === Skill Runtime ===
+skillRuntime:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+# === Logstash ===
+logstash:
+  enabled: false
+
+# === Ingress ===
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: api.staging.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-server
+          port: 8000
+    - host: ws.staging.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8001
+  tls:
+    - secretName: wanxiang-staging-tls
+      hosts:
+        - api.staging.wanxiang.ai
+        - ws.staging.wanxiang.ai
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+
+# === Network Policy ===
+networkPolicy:
+  enabled: true
+  ingressNamespaceSelector:
+    matchLabels:
+      name: traefik
+  externalServices:
+    postgresql: "10.1.1.0/24"
+    redis: "10.1.2.0/24"
+    qdrant: "10.1.3.0/24"
+    elasticsearch: "10.1.4.0/24"
+    minio: "10.1.5.0/24"
+
+# === 可观测性（测试环境精简） ===
+observability:
+  prometheus:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    retention: "7d"
+    storageSize: "20Gi"
+  grafana:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "250m"
+        memory: "512Mi"
+  otelCollector:
+    enabled: false
+  jaeger:
+    enabled: false
+
+# === 告警 ===
+alerting:
+  enabled: false
+
+# === Pod 安全策略 ===
+podSecurity:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]

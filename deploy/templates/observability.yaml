@@ -1,0 +1,627 @@
+{{/*
+==============================================================================
+Observability — Prometheus + Grafana + OTEL Collector + Jaeger
+万象积木可观测性组件
+==============================================================================
+*/}}
+
+{{- if .Values.observability.prometheus.enabled }}
+---
+# === Prometheus Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-prometheus
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: {{ .Values.observability.prometheus.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: prometheus
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: prometheus
+    spec:
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.51.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time={{ .Values.observability.prometheus.retention }}"
+            - "--web.enable-lifecycle"
+            - "--web.enable-admin-api"
+          ports:
+            - name: web
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.observability.prometheus.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: web
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: web
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: storage
+              mountPath: /prometheus
+            - name: alerting-rules
+              mountPath: /etc/prometheus/rules
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wanxiang.fullname" . }}-prometheus-config
+        - name: alerting-rules
+          configMap:
+            name: {{ include "wanxiang.fullname" . }}-alerting-rules
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ include "wanxiang.fullname" . }}-prometheus-pvc
+
+---
+# === Prometheus ConfigMap ===
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-prometheus-config
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: wanxiang-jimu
+        environment: {{ .Values.global.environment }}
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      # API Server
+      - job_name: 'api-server'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ include "wanxiang.namespace" . }}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: api-server
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: "true"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            target_label: __metrics_path__
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_ip]
+            regex: (.+);(.+)
+            target_label: __address__
+            replacement: $2:$1
+
+      # Gateway
+      - job_name: 'gateway'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: gateway
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: "true"
+            action: keep
+
+      # Agent Orchestrator
+      - job_name: 'agent-orchestrator'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: agent-orchestrator
+            action: keep
+
+      # RAG Service
+      - job_name: 'rag-service'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: rag-service
+            action: keep
+
+      # Tool Sandbox
+      - job_name: 'tool-sandbox'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            regex: tool-sandbox
+            action: keep
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: []
+
+---
+# === Prometheus PVC ===
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-prometheus-pvc
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.observability.prometheus.storageSize }}
+  storageClassName: local-path
+
+---
+# === Prometheus Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-prometheus
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.observability.prometheus.service.port }}
+      targetPort: 9090
+      protocol: TCP
+      name: web
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+
+{{- end }}
+
+{{- if .Values.observability.grafana.enabled }}
+---
+# === Grafana Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-grafana
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+spec:
+  replicas: {{ .Values.observability.grafana.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: grafana
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: grafana
+    spec:
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: wanxiang-secrets
+                  key: grafana-admin-password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_SERVER_ROOT_URL
+              value: "https://grafana.wanxiang.ai"
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-piechart-panel"
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.observability.grafana.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/grafana/provisioning
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/grafana
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wanxiang.fullname" . }}-grafana-config
+        - name: storage
+          emptyDir: {}
+
+---
+# === Grafana ConfigMap ===
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-grafana-config
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+data:
+  datasources/datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ include "wanxiang.fullname" . }}-prometheus:9090
+        isDefault: true
+      - name: Jaeger
+        type: jaeger
+        access: proxy
+        url: http://{{ include "wanxiang.fullname" . }}-jaeger-query:16686
+
+  dashboards/dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'WanXiang AI'
+        orgId: 1
+        folder: 'WanXiang AI'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+# === Grafana Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-grafana
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.observability.grafana.service.port }}
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+
+{{- end }}
+
+{{- if .Values.observability.otelCollector.enabled }}
+---
+# === OpenTelemetry Collector Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-otel-collector
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  replicas: {{ .Values.observability.otelCollector.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: otel-collector
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: otel-collector
+    spec:
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          args:
+            - "--config=/etc/otelcol/config.yaml"
+          ports:
+            - name: otlp-grpc
+              containerPort: {{ .Values.observability.otelCollector.service.port }}
+              protocol: TCP
+            - name: otlp-http
+              containerPort: {{ .Values.observability.otelCollector.service.httpPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.observability.otelCollector.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wanxiang.fullname" . }}-otel-config
+
+---
+# === OTEL Collector ConfigMap ===
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-otel-config
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: {{ .Values.global.environment }}
+            action: upsert
+
+    exporters:
+      jaeger:
+        endpoint: "{{ include "wanxiang.fullname" . }}-jaeger-collector:14250"
+        tls:
+          insecure: true
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+      logging:
+        loglevel: {{ .Values.global.logLevel }}
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [jaeger]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, logging]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [logging]
+
+      extensions:
+        health_check:
+          endpoint: 0.0.0.0:13133
+
+---
+# === OTEL Collector Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-otel-collector
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.observability.otelCollector.service.port }}
+      targetPort: 4317
+      protocol: TCP
+      name: otlp-grpc
+    - port: {{ .Values.observability.otelCollector.service.httpPort }}
+      targetPort: 4318
+      protocol: TCP
+      name: otlp-http
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+
+{{- end }}
+
+{{- if .Values.observability.jaeger.enabled }}
+---
+# === Jaeger Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-jaeger
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+spec:
+  replicas: {{ .Values.observability.jaeger.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: jaeger
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: jaeger
+    spec:
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.55.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+            - name: SPAN_STORAGE_TYPE
+              value: "badger"
+            - name: BADGER_EPHEMERAL
+              value: "false"
+            - name: BADGER_DIRECTORY_VALUE
+              value: "/badger/data"
+            - name: BADGER_DIRECTORY_KEY
+              value: "/badger/key"
+          ports:
+            - name: query
+              containerPort: {{ .Values.observability.jaeger.service.queryPort }}
+              protocol: TCP
+            - name: collector
+              containerPort: {{ .Values.observability.jaeger.service.collectorPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: 14250
+              protocol: TCP
+            - name: otlp
+              containerPort: 4317
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.observability.jaeger.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: query
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: query
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /badger
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# === Jaeger Service (Query UI) ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-jaeger-query
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.observability.jaeger.service.queryPort }}
+      targetPort: {{ .Values.observability.jaeger.service.queryPort }}
+      protocol: TCP
+      name: query
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+
+---
+# === Jaeger Service (Collector) ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-jaeger-collector
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.observability.jaeger.service.collectorPort }}
+      targetPort: {{ .Values.observability.jaeger.service.collectorPort }}
+      protocol: TCP
+      name: collector-http
+    - port: 14250
+      targetPort: 14250
+      protocol: TCP
+      name: collector-grpc
+    - port: 4317
+      targetPort: 4317
+      protocol: TCP
+      name: otlp-grpc
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+
+{{- end }}

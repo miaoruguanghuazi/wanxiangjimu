@@ -1,0 +1,515 @@
+# ==============================================================================
+# values-production.yaml — 万象积木 生产环境覆盖配置
+# 使用方式: helm install wanxiang ./deploy -f ./deploy/values-production.yaml
+# ==============================================================================
+
+# === 全局 ===
+global:
+  environment: production
+  tenantMode: multi
+  logLevel: info
+  imagePullPolicy: Always
+  imageRegistry: registry.wanxiang.ai
+  imageTag: ""                   # CI 中设置为 commit SHA
+  imagePullSecrets:
+    - name: registry-credentials
+
+  serviceMesh:
+    enabled: true
+    mtls: true
+
+  vault:
+    enabled: true
+    address: "https://vault.wanxiang.ai:8200"
+    role: wanxiang-jimu-production
+
+# === 命名空间 ===
+namespace:
+  create: true
+  name: wanxiang-production
+
+# === API Server ===
+apiServer:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wanxiang-api-server
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  pdb:
+    enabled: true
+    minAvailable: 2
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  env:
+    - name: APP_ENV
+      value: "production"
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: database-url
+    - name: REDIS_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: redis-url
+    - name: QDRANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: qdrant-url
+    - name: ELASTICSEARCH_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: elasticsearch-url
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  canary:
+    enabled: false
+    weight: 100
+
+# === Gateway ===
+gateway:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wanxiang-gateway
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8001
+    targetPort: 8001
+  env:
+    - name: WEBSOCKET_MAX_CONNECTIONS
+      value: "50000"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8001
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8001
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === NLU Service ===
+nluService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-nlu
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8002
+    targetPort: 8002
+
+# === Model Router ===
+modelRouter:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-model-router
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8003
+    targetPort: 8003
+  env:
+    - name: MODEL_FALLBACK_CHAIN
+      value: "gpt-4o,glm-4,deepseek-v3,qwen-max"
+
+# === Agent Orchestrator ===
+agentOrchestrator:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wanxiang-orchestrator
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilization: 70
+  service:
+    type: ClusterIP
+    port: 8004
+    targetPort: 8004
+  timeoutSeconds: 300
+  maxConcurrentPlans: 50
+  env:
+    - name: ORCHESTRATION_TIMEOUT
+      value: "300"
+    - name: MAX_CONCURRENT_PLANS
+      value: "50"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8004
+    initialDelaySeconds: 15
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8004
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === RAG Service ===
+ragService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-rag
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  service:
+    type: ClusterIP
+    port: 8005
+    targetPort: 8005
+  env:
+    - name: ELASTICSEARCH_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: elasticsearch-url
+    - name: QDRANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: qdrant-url
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8005
+    initialDelaySeconds: 15
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8005
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === Embedding Service ===
+embeddingService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-embedding
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "2"
+      memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilization: 75
+  service:
+    type: ClusterIP
+    port: 8006
+    targetPort: 8006
+  env:
+    - name: MODEL_NAME
+      value: "BAAI/bge-large-zh-v1.5"
+
+# === SD Service (GPU) ===
+sdService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-sd
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+      nvidia.com/gpu: "1"
+  nodeSelector:
+    gpu: "true"
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  service:
+    type: ClusterIP
+    port: 8007
+    targetPort: 8007
+
+# === Tool Sandbox ===
+toolSandbox:
+  enabled: true
+  replicaCount: 5
+  image:
+    repository: wanxiang-tool-sandbox
+    pullPolicy: Always
+  hpa:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 20
+    targetCPUUtilization: 80
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8008
+    targetPort: 8008
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  limits:
+    maxExecutionTime: 30
+    maxMemoryMB: 512
+    maxDiskMB: 100
+
+# === Skill Runtime ===
+skillRuntime:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wanxiang-skill-runtime
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8009
+    targetPort: 8009
+
+# === Logstash ===
+logstash:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-logstash
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8010
+    targetPort: 8010
+
+# === Ingress ===
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: api.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-server
+          port: 8000
+    - host: ws.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8001
+  tls:
+    - secretName: wanxiang-tls
+      hosts:
+        - api.wanxiang.ai
+        - ws.wanxiang.ai
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: wanxiang-production-ratelimit@kubernetescrd
+
+# === Network Policy ===
+networkPolicy:
+  enabled: true
+  ingressNamespaceSelector:
+    matchLabels:
+      name: traefik
+  externalServices:
+    postgresql: "10.0.1.0/24"
+    redis: "10.0.2.0/24"
+    qdrant: "10.0.3.0/24"
+    elasticsearch: "10.0.4.0/24"
+    minio: "10.0.5.0/24"
+
+# === 可观测性（生产环境完整启用） ===
+observability:
+  prometheus:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    retention: "30d"
+    storageSize: "100Gi"
+    service:
+      port: 9090
+  grafana:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    adminPassword: ""           # 通过 --set 注入或 Vault 获取
+    service:
+      port: 3000
+  otelCollector:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    service:
+      port: 4317
+      httpPort: 4318
+  jaeger:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    service:
+      queryPort: 16686
+      collectorPort: 14268
+
+# === 告警 ===
+alerting:
+  enabled: true
+
+# === Pod 安全策略 ===
+podSecurity:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# === 节点调度 ===
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - wanxiang-jimu
+          topologyKey: kubernetes.io/hostname

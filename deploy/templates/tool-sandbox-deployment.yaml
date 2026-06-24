@@ -1,0 +1,151 @@
+{{/*
+==============================================================================
+Tool Sandbox — Deployment + HPA
+Python 代码执行沙箱，安全隔离，按负载扩缩到 20 Pod
+==============================================================================
+*/}}
+{{- if .Values.toolSandbox.enabled -}}
+
+---
+# === Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-tool-sandbox
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-sandbox
+spec:
+  replicas: {{ .Values.toolSandbox.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tool-sandbox
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tool-sandbox
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8008"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "wanxiang.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: tool-sandbox
+          image: {{ include "wanxiang.image" (list . .Values.toolSandbox.image.repository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+            {{- with .Values.toolSandbox.securityContext }}
+            runAsNonRoot: {{ .runAsNonRoot }}
+            runAsUser: {{ .runAsUser }}
+            readOnlyRootFilesystem: {{ .readOnlyRootFilesystem }}
+            allowPrivilegeEscalation: {{ .allowPrivilegeEscalation }}
+            {{- with .capabilities }}
+            capabilities:
+              drop:
+                {{- toYaml .drop | nindent 16 }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8008
+              protocol: TCP
+          env:
+            - name: MAX_EXECUTION_TIME
+              value: {{ .Values.toolSandbox.limits.maxExecutionTime | quote }}
+            - name: MAX_MEMORY_MB
+              value: {{ .Values.toolSandbox.limits.maxMemoryMB | quote }}
+            - name: MAX_DISK_MB
+              value: {{ .Values.toolSandbox.limits.maxDiskMB | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "wanxiang.fullname" . }}-global-config
+          resources:
+            {{- toYaml .Values.toolSandbox.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8008
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8008
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ printf "%dMi" .Values.toolSandbox.limits.maxDiskMB }}
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ printf "%dMi" .Values.toolSandbox.limits.maxDiskMB }}
+      # 沙箱 Pod 不需要反亲和，允许同节点密度部署
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+{{- if .Values.toolSandbox.hpa.enabled }}
+---
+# === HPA — 按负载自动扩缩到 20 Pod ===
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-tool-sandbox
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tool-sandbox
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wanxiang.fullname" . }}-tool-sandbox
+  minReplicas: {{ .Values.toolSandbox.hpa.minReplicas }}
+  maxReplicas: {{ .Values.toolSandbox.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.toolSandbox.hpa.targetCPUUtilization }}
+  behavior:
+    # 沙箱需要快速扩容应对突发负载
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 200
+          periodSeconds: 15
+        - type: Pods
+          value: 5
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}
+
+{{- end -}}

@@ -1,0 +1,309 @@
+{{/*
+==============================================================================
+NetworkPolicy — 万象积木 服务间网络隔离
+默认拒绝所有流量，仅允许白名单内的通信
+==============================================================================
+*/}}
+{{- if .Values.networkPolicy.enabled -}}
+
+---
+# === 默认拒绝所有入站和出站流量 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-default-deny
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# === 允许 Ingress Controller 访问 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-ingress
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 允许 Traefik Ingress Controller 命名空间访问
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 12 }}
+      ports:
+        # API Server
+        - port: 8000
+          protocol: TCP
+        # Gateway (WebSocket)
+        - port: 8001
+          protocol: TCP
+        # NLU Service
+        - port: 8002
+          protocol: TCP
+        # Model Router
+        - port: 8003
+          protocol: TCP
+        # Agent Orchestrator
+        - port: 8004
+          protocol: TCP
+        # RAG Service
+        - port: 8005
+          protocol: TCP
+        # Embedding Service
+        - port: 8006
+          protocol: TCP
+        # SD Service
+        - port: 8007
+          protocol: TCP
+        # Tool Sandbox
+        - port: 8008
+          protocol: TCP
+        # Skill Runtime
+        - port: 8009
+          protocol: TCP
+
+---
+# === 服务间内部通信 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-internal-communication
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 允许同命名空间内服务互相访问
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 8001
+          protocol: TCP
+        - port: 8002
+          protocol: TCP
+        - port: 8003
+          protocol: TCP
+        - port: 8004
+          protocol: TCP
+        - port: 8005
+          protocol: TCP
+        - port: 8006
+          protocol: TCP
+        - port: 8007
+          protocol: TCP
+        - port: 8008
+          protocol: TCP
+        - port: 8009
+          protocol: TCP
+        - port: 8010
+          protocol: TCP
+
+---
+# === DNS 出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-dns
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# === 外部数据库出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-postgresql
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalServices.postgresql | quote }}
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# === Redis 出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-redis
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalServices.redis | quote }}
+      ports:
+        - port: 6379
+          protocol: TCP
+
+---
+# === Qdrant 出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-qdrant
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalServices.qdrant | quote }}
+      ports:
+        - port: 6333
+          protocol: TCP
+        - port: 6334
+          protocol: TCP
+
+---
+# === Elasticsearch 出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-elasticsearch
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalServices.elasticsearch | quote }}
+      ports:
+        - port: 9200
+          protocol: TCP
+        - port: 9300
+          protocol: TCP
+
+---
+# === MinIO 出站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-minio
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalServices.minio | quote }}
+      ports:
+        - port: 9000
+          protocol: TCP
+
+---
+# === HTTPS 出站（LLM API 调用） ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-https
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values:
+          - tool-sandbox
+  policyTypes:
+    - Egress
+  egress:
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+
+---
+# === Tool Sandbox 网络隔离 ===
+# 沙箱禁止直接访问外部网络，仅允许访问内部服务
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-tool-sandbox-isolation
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: tool-sandbox
+  policyTypes:
+    - Egress
+  egress:
+    # 允许 DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+    # 仅允许访问 API Server（通过代理访问外部）
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api-server
+      ports:
+        - port: 8000
+          protocol: TCP
+
+---
+# === 可观测性端口入站 ===
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-allow-observability
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 允许 Prometheus 抓取 /metrics
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 8001
+          protocol: TCP
+        - port: 8004
+          protocol: TCP
+        - port: 8005
+          protocol: TCP
+        - port: 8008
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+
+{{- end -}}

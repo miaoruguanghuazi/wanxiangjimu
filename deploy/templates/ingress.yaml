@@ -1,0 +1,175 @@
+{{/*
+==============================================================================
+Ingress — Traefik IngressRoute
+万象积木入口路由配置
+*/}}
+{{- if .Values.ingress.enabled -}}
+
+---
+# === HTTP Ingress（标准 Kubernetes Ingress） ===
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-ingress
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+  annotations:
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "wanxiang.fullname" $ }}-{{ .service }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+    {{- end }}
+
+---
+# === Traefik IngressRoute（高级路由 + 限流 + WebSocket） ===
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-routes
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    {{- $fullname := include "wanxiang.fullname" . -}}
+    {{- $namespace := include "wanxiang.namespace" . -}}
+    {{- $apiHost := (index .Values.ingress.hosts 0).host -}}
+    {{- $wsHost := (index .Values.ingress.hosts 1).host -}}
+    {{- $apiPort := (index (index .Values.ingress.hosts 0).paths 0).port -}}
+    {{- $wsPort := (index (index .Values.ingress.hosts 1).paths 0).port -}}
+
+    # API Server 路由
+    - match: Host(`{{ $apiHost }}`)
+      kind: Rule
+      services:
+        - name: {{ $fullname }}-api-server
+          port: {{ $apiPort }}
+          strategy: RoundRobin
+          serversTransport: default
+      middlewares:
+        - name: wanxiang-ratelimit
+          namespace: {{ $namespace }}
+        - name: wanxiang-headers
+          namespace: {{ $namespace }}
+      priority: 100
+
+    # WebSocket Gateway 路由
+    - match: Host(`{{ $wsHost }}`)
+      kind: Rule
+      services:
+        - name: {{ $fullname }}-gateway
+          port: {{ $wsPort }}
+          strategy: RoundRobin
+      middlewares:
+        - name: wanxiang-ws-headers
+          namespace: {{ $namespace }}
+      priority: 100
+
+    # 健康检查路径（直连，不限流）
+    - match: Host(`{{ $apiHost }}`) && Path(`/health`)
+      kind: Rule
+      services:
+        - name: {{ $fullname }}-api-server
+          port: {{ $apiPort }}
+      priority: 200
+
+    # Prometheus 指标路径（仅内网访问）
+    - match: Host(`{{ $apiHost }}`) && Path(`/metrics`)
+      kind: Rule
+      services:
+        - name: {{ $fullname }}-api-server
+          port: {{ $apiPort }}
+      middlewares:
+        - name: wanxiang-internal-only
+          namespace: {{ $namespace }}
+      priority: 200
+
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+---
+# === Middleware: 限流 ===
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: wanxiang-ratelimit
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  rateLimit:
+    average: 100              # 平均 100 请求/秒
+    burst: 200                # 突发 200 请求
+    period: 1s
+
+---
+# === Middleware: 安全头 ===
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: wanxiang-headers
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  headers:
+    frameDeny: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    referrerPolicy: "strict-origin-when-cross-origin"
+    accessControlAllowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    accessControlAllowHeaders: ["Authorization", "Content-Type", "X-Request-ID"]
+    accessControlMaxAge: 86400
+
+---
+# === Middleware: WebSocket 头 ===
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: wanxiang-ws-headers
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+    customResponseHeaders:
+      X-Content-Type-Options: "nosniff"
+
+---
+# === Middleware: 仅内网访问 ===
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: wanxiang-internal-only
+  namespace: {{ include "wanxiang.namespace" . }}
+spec:
+  ipAllowList:
+    sourceRange:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+
+{{- end -}}

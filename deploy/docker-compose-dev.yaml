@@ -1,0 +1,397 @@
+# ==============================================================================
+# docker-compose-dev.yaml — 万象积木 开发环境
+# 用于本地调试，模拟 K3s 集群中的服务拓扑
+# 使用方式: docker compose -f docker-compose-dev.yaml up -d
+# ==============================================================================
+
+version: "3.9"
+
+services:
+  # ============================================================
+  # 基础设施
+  # ============================================================
+
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: wanxiang-postgres
+    environment:
+      POSTGRES_DB: wanxiang_ai
+      POSTGRES_USER: wanxiang
+      POSTGRES_PASSWORD: wanxiang_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/postgres:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wanxiang"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: wanxiang-redis
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: wanxiang-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+
+  # Elasticsearch 全文检索
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: wanxiang-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # MinIO 对象存储
+  minio:
+    image: minio/minio:latest
+    container_name: wanxiang-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: wanxiang
+      MINIO_ROOT_PASSWORD: wanxiang_dev_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ============================================================
+  # 可观测性
+  # ============================================================
+
+  # Prometheus 指标采集
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: wanxiang-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus-dev.yml:/etc/prometheus/prometheus.yml
+      - ./alerting-rules.yaml:/etc/prometheus/rules/alerting-rules.yaml
+      - prometheus_data:/prometheus
+
+  # Grafana 可视化
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: wanxiang-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # Jaeger 链路追踪
+  jaeger:
+    image: jaegertracing/all-in-one:1.55.0
+    container_name: wanxiang-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "14268:14268"   # HTTP Collector
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+
+  # ============================================================
+  # 应用服务（开发模式下各服务独立启动）
+  # ============================================================
+
+  # API Server
+  api-server:
+    build:
+      context: ../services/api-server
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-api-server
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql://wanxiang:wanxiang_dev_password@postgres:5432/wanxiang_ai
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      LOG_LEVEL: debug
+    volumes:
+      - ../services/api-server:/app
+      - ../packages:/app/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    # 热重载
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir src
+
+  # Gateway (WebSocket)
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-gateway
+    ports:
+      - "8001:8001"
+    environment:
+      APP_ENV: development
+      API_SERVER_URL: http://api-server:8000
+      REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    volumes:
+      - ../services/gateway:/app
+    depends_on:
+      - api-server
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8001
+      --reload
+      --reload-dir src
+
+  # Agent Orchestrator
+  agent-orchestrator:
+    build:
+      context: ../services/orchestrator
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-orchestrator
+    ports:
+      - "8004:8004"
+    environment:
+      APP_ENV: development
+      REDIS_URL: redis://redis:6379/0
+      API_SERVER_URL: http://api-server:8000
+      MODEL_ROUTER_URL: http://model-router:8003
+      TOOL_SANDBOX_URL: http://tool-sandbox:8008
+      RAG_SERVICE_URL: http://rag-service:8005
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      ORCHESTRATION_TIMEOUT: "120"
+      MAX_CONCURRENT_PLANS: "10"
+    volumes:
+      - ../services/orchestrator:/app
+    depends_on:
+      - api-server
+      - redis
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8004
+      --reload
+      --reload-dir src
+
+  # Model Router
+  model-router:
+    build:
+      context: ../services/model-router
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-model-router
+    ports:
+      - "8003:8003"
+    environment:
+      APP_ENV: development
+      MODEL_FALLBACK_CHAIN: "gpt-4o,glm-4,deepseek-v3,qwen-max"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    volumes:
+      - ../services/model-router:/app
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8003
+      --reload
+      --reload-dir src
+
+  # RAG Service
+  rag-service:
+    build:
+      context: ../services/rag
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-rag-service
+    ports:
+      - "8005:8005"
+    environment:
+      APP_ENV: development
+      QDRANT_URL: http://qdrant:6333
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      EMBEDDING_SERVICE_URL: http://embedding-service:8006
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    volumes:
+      - ../services/rag:/app
+    depends_on:
+      - qdrant
+      - elasticsearch
+      - embedding-service
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8005
+      --reload
+      --reload-dir src
+
+  # Embedding Service
+  embedding-service:
+    build:
+      context: ../services/embedding
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-embedding
+    ports:
+      - "8006:8006"
+    environment:
+      APP_ENV: development
+      MODEL_NAME: BAAI/bge-large-zh-v1.5
+    volumes:
+      - ../services/embedding:/app
+      - huggingface_cache:/root/.cache/huggingface
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8006
+      --reload
+      --reload-dir src
+
+  # Tool Sandbox
+  tool-sandbox:
+    build:
+      context: ../services/tool-sandbox
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-tool-sandbox
+    ports:
+      - "8008:8008"
+    environment:
+      APP_ENV: development
+      MAX_EXECUTION_TIME: "30"
+      MAX_MEMORY_MB: "512"
+      MAX_DISK_MB: "100"
+    volumes:
+      - ../services/tool-sandbox:/app
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+      - /workspace:size=100M
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8008
+      --reload
+      --reload-dir src
+
+  # Skill Runtime
+  skill-runtime:
+    build:
+      context: ../services/skill-runtime
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-skill-runtime
+    ports:
+      - "8009:8009"
+    environment:
+      APP_ENV: development
+      API_SERVER_URL: http://api-server:8000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    volumes:
+      - ../services/skill-runtime:/app
+    depends_on:
+      - api-server
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8009
+      --reload
+      --reload-dir src
+
+  # NLU Service
+  nlu-service:
+    build:
+      context: ../services/nlu
+      dockerfile: Dockerfile.dev
+    container_name: wanxiang-nlu
+    ports:
+      - "8002:8002"
+    environment:
+      APP_ENV: development
+      MODEL_ROUTER_URL: http://model-router:8003
+    volumes:
+      - ../services/nlu:/app
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8002
+      --reload
+      --reload-dir src
+
+# ============================================================
+# 数据卷
+# ============================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  es_data:
+    driver: local
+  minio_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  huggingface_cache:
+    driver: local
+
+# ============================================================
+# 网络
+# ============================================================
+networks:
+  default:
+    name: wanxiang-dev-network
+    driver: bridge

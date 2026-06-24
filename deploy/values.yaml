@@ -1,0 +1,506 @@
+# ==============================================================================
+# values.yaml — 万象积木 Helm Chart 默认配置
+# 这是基础配置，生产环境请使用 values-production.yaml 覆盖
+# 测试环境请使用 values-staging.yaml 覆盖
+# ==============================================================================
+
+# === 全局配置 ===
+global:
+  environment: development          # development | staging | production
+  tenantMode: single                # single | multi
+  logLevel: debug                   # debug | info | warn | error
+  imagePullPolicy: IfNotPresent     # IfNotPresent | Always
+  imageRegistry: registry.wanxiang.ai  # 镜像仓库地址
+  imageTag: latest                  # 镜像标签，CI 中会被覆盖为 commit SHA
+  imagePullSecrets: []              # 镜像拉取凭证
+  # imagePullSecrets:
+  #   - name: registry-credentials
+
+  # 服务网格配置
+  serviceMesh:
+    enabled: false
+    mtls: false
+
+  # Vault 密钥管理
+  vault:
+    enabled: false
+    address: "https://vault.wanxiang.ai:8200"
+    role: wanxiang-jimu
+
+# === 命名空间 ===
+namespace:
+  create: true
+  name: wanxiang-jimu
+
+# === API Server ===
+apiServer:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-api-server
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  pdb:
+    enabled: true
+    minAvailable: 1
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  env:
+    - name: APP_ENV
+      value: "development"
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: database-url
+    - name: REDIS_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: redis-url
+    - name: QDRANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: qdrant-url
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  # 金丝雀发布
+  canary:
+    enabled: false
+    weight: 0
+
+# === Gateway (WebSocket + 协议适配) ===
+gateway:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-gateway
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8001
+    targetPort: 8001
+  env:
+    - name: WEBSOCKET_MAX_CONNECTIONS
+      value: "10000"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8001
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8001
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === NLU Service (意图识别) ===
+nluService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-nlu
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8002
+    targetPort: 8002
+
+# === Model Router (模型选择 + 降级) ===
+modelRouter:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-model-router
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8003
+    targetPort: 8003
+  env:
+    - name: MODEL_FALLBACK_CHAIN
+      value: "gpt-4o,glm-4,deepseek-v3,qwen-max"
+
+# === Agent Orchestrator (Agent 编排核心) ===
+agentOrchestrator:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-orchestrator
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+  service:
+    type: ClusterIP
+    port: 8004
+    targetPort: 8004
+  timeoutSeconds: 300           # 整体编排超时
+  maxConcurrentPlans: 50       # 最大并发编排计划
+  env:
+    - name: ORCHESTRATION_TIMEOUT
+      value: "300"
+    - name: MAX_CONCURRENT_PLANS
+      value: "50"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8004
+    initialDelaySeconds: 15
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8004
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === RAG Service (文档解析 + 检索) ===
+ragService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-rag
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  service:
+    type: ClusterIP
+    port: 8005
+    targetPort: 8005
+  env:
+    - name: ELASTICSEARCH_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: elasticsearch-url
+    - name: QDRANT_URL
+      valueFrom:
+        secretKeyRef:
+          name: wanxiang-secrets
+          key: qdrant-url
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8005
+    initialDelaySeconds: 15
+    periodSeconds: 15
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8005
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# === Embedding Service (BGE 向量化) ===
+embeddingService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-embedding
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "2"
+      memory: "4Gi"
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilization: 75
+  service:
+    type: ClusterIP
+    port: 8006
+    targetPort: 8006
+  env:
+    - name: MODEL_NAME
+      value: "BAAI/bge-large-zh-v1.5"
+
+# === SD Service (图片生成, GPU) ===
+sdService:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: wanxiang-sd
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+      nvidia.com/gpu: "1"
+  nodeSelector:
+    gpu: "true"
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  service:
+    type: ClusterIP
+    port: 8007
+    targetPort: 8007
+
+# === Tool Sandbox (Python 沙箱) ===
+toolSandbox:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wanxiang-tool-sandbox
+    pullPolicy: IfNotPresent
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilization: 80
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8008
+    targetPort: 8008
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  limits:
+    maxExecutionTime: 30       # 单次执行最大 30 秒
+    maxMemoryMB: 512           # 沙箱内存限制
+    maxDiskMB: 100             # 磁盘限制
+
+# === Skill Runtime (Skill 执行运行时) ===
+skillRuntime:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-skill-runtime
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8009
+    targetPort: 8009
+
+# === Logstash (日志处理管道) ===
+logstash:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wanxiang-logstash
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: ClusterIP
+    port: 8010
+    targetPort: 8010
+
+# === Ingress ===
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: api.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-server
+          port: 8000
+    - host: ws.wanxiang.ai
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8001
+  tls:
+    - secretName: wanxiang-tls
+      hosts:
+        - api.wanxiang.ai
+        - ws.wanxiang.ai
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+
+# === Network Policy ===
+networkPolicy:
+  enabled: true
+  # 允许 Ingress Controller 命名空间访问
+  ingressNamespaceSelector:
+    matchLabels:
+      name: traefik
+  # 外部服务 CIDR 白名单
+  externalServices:
+    postgresql: "10.0.1.0/24"
+    redis: "10.0.2.0/24"
+    qdrant: "10.0.3.0/24"
+    elasticsearch: "10.0.4.0/24"
+    minio: "10.0.5.0/24"
+
+# === 可观测性 ===
+observability:
+  prometheus:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    retention: "15d"
+    storageSize: "50Gi"
+    service:
+      port: 9090
+  grafana:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+    adminPassword: ""           # 生产环境必须设置
+    service:
+      port: 3000
+  otelCollector:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    service:
+      port: 4317               # OTLP gRPC
+      httpPort: 4318            # OTLP HTTP
+  jaeger:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+    service:
+      queryPort: 16686
+      collectorPort: 14268
+
+# === 告警规则 ===
+alerting:
+  enabled: true
+  # Prometheus 告警规则将在 alerting-rules.yaml 中定义
+
+# === Pod 安全策略 ===
+podSecurity:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# === 节点亲和性 ===
+nodeSelector: {}
+tolerations: []
+affinity: {}

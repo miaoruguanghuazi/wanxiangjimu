@@ -1,0 +1,88 @@
+# =============================================================================
+# 万象积木 助手 — docker-compose.yml (优化版)
+# 包含 API 服务、健康检查、自动重启、数据持久化
+# =============================================================================
+
+services:
+  wanxiang-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      cache_from:
+        - wanxiang-ai:latest
+    container_name: wanxiang-ai
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      HF_ENDPOINT: https://hf-mirror.com
+      WANXIANG_API_KEY: ${WANXIANG_API_KEY:-}
+    volumes:
+      - chroma_data:/app/data/chroma
+      - uploads_data:/app/data/uploads
+      - memory_data:/app/data/memory
+      - hf_cache:/app/.cache/huggingface
+      - ./.env:/app/.env:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - wanxiang-net
+
+  # API 服务（可选，与主应用共用代码）
+  wanxiang-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wanxiang-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      WANXIANG_API_KEY: ${WANXIANG_API_KEY:-}
+    command: ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - chroma_data:/app/data/chroma
+      - memory_data:/app/data/memory
+      - hf_cache:/app/.cache/huggingface
+    depends_on:
+      wanxiang-ai:
+        condition: service_healthy
+    profiles:
+      - with-api
+    networks:
+      - wanxiang-net
+
+volumes:
+  chroma_data:
+    driver: local
+  uploads_data:
+    driver: local
+  memory_data:
+    driver: local
+  hf_cache:
+    driver: local
+
+networks:
+  wanxiang-net:
+    driver: bridge

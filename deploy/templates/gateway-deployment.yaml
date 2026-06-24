@@ -1,0 +1,108 @@
+{{/*
+==============================================================================
+Gateway — Deployment + Service
+WebSocket 网关 + 协议适配层
+==============================================================================
+*/}}
+{{- if .Values.gateway.enabled -}}
+
+---
+# === Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-gateway
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-global.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "wanxiang.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: gateway
+          image: {{ include "wanxiang.image" (list . .Values.gateway.image.repository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: ws
+              containerPort: 8001
+              protocol: TCP
+          env:
+            {{- toYaml .Values.gateway.env | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "wanxiang.fullname" . }}-global-config
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.gateway.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.gateway.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      affinity:
+        {{- include "wanxiang.podAntiAffinity" . | nindent 8 }}
+      {{- end }}
+
+---
+# === Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-gateway
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  annotations:
+    # Traefik WebSocket 支持
+    traefik.ingress.kubernetes.io/service.sticky: "true"
+spec:
+  type: {{ .Values.gateway.service.type }}
+  # WebSocket 会话保持
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  ports:
+    - port: {{ .Values.gateway.service.port }}
+      targetPort: {{ .Values.gateway.service.targetPort }}
+      protocol: TCP
+      name: ws
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+
+{{- end -}}

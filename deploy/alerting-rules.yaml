@@ -1,0 +1,298 @@
+# ==============================================================================
+# alerting-rules.yaml — 万象积木 Prometheus 告警规则
+# 部署方式: kubectl apply -f alerting-rules.yaml -n wanxiang-production
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wanxiang-jimu-alerting-rules
+  namespace: wanxiang-jimu
+  labels:
+    app.kubernetes.io/name: wanxiang-jimu
+    app.kubernetes.io/component: alerting
+data:
+  wanxiang-jimu-alerts.yml: |
+    groups:
+      # ============================================================
+      # 关键告警 — 需要立即处理
+      # ============================================================
+      - name: wanxiang-jimu-critical
+        rules:
+          # API Server 5xx 错误率超过 2%
+          - alert: APIHighErrorRate
+            expr: |
+              rate(http_requests_total{status=~"5..",service="api-server"}[5m])
+              / rate(http_requests_total{service="api-server"}[5m]) > 0.02
+            for: 2m
+            labels:
+              severity: critical
+              service: api-server
+            annotations:
+              summary: "API Server 5xx 错误率超过 2%"
+              description: "API Server 在过去 5 分钟内 5xx 错误率为 {{ $value | humanizePercentage }}，阈值 2%。"
+              runbook: "https://wiki.wanxiang.ai/runbooks/api-high-error-rate"
+
+          # 熔断器已开启
+          - alert: CircuitBreakerOpen
+            expr: circuit_breaker_state{state="open"} == 1
+            for: 1m
+            labels:
+              severity: critical
+              service: model-router
+            annotations:
+              summary: "熔断器已开启 ({{ $labels.circuit_name }})"
+              description: "模型路由器熔断器 {{ $labels.circuit_name }} 已处于 open 状态超过 1 分钟。"
+              runbook: "https://wiki.wanxiang.ai/runbooks/circuit-breaker-open"
+
+          # Pod 内存使用超过 85%
+          - alert: MemoryPressure
+            expr: |
+              container_memory_working_set_bytes
+              / container_spec_memory_limit_bytes > 0.85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod 内存使用超过 85% ({{ $labels.pod }})"
+              description: "Pod {{ $labels.pod }} 内存使用率持续 5 分钟超过 85%，当前 {{ $value | humanizePercentage }}。"
+
+          # Pod 重启次数异常
+          - alert: PodCrashLooping
+            expr: |
+              increase(kube_pod_container_status_restarts_total[1h]) > 5
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod 频繁重启 ({{ $labels.pod }})"
+              description: "Pod {{ $labels.pod }} 在过去 1 小时内重启 {{ $value }} 次，可能存在 CrashLoopBackOff。"
+
+          # Deployment 副本数不足
+          - alert: DeploymentReplicasMismatch
+            expr: |
+              kube_deployment_status_replicas_available
+              != kube_deployment_spec_replicas
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Deployment 副本数不足 ({{ $labels.deployment }})"
+              description: "Deployment {{ $labels.deployment }} 可用副本数与期望副本数不匹配超过 10 分钟。"
+
+      # ============================================================
+      # LLM / 模型相关告警
+      # ============================================================
+      - name: wanxiang-jimu-llm
+        rules:
+          # LLM 调用超时率超过 10%
+          - alert: LLMCallTimeout
+            expr: |
+              rate(llm_call_duration_seconds_count{status="timeout"}[5m])
+              / rate(llm_call_duration_seconds_count[5m]) > 0.1
+            for: 3m
+            labels:
+              severity: warning
+              service: model-router
+            annotations:
+              summary: "LLM 调用超时率超过 10%"
+              description: "模型 {{ $labels.model }} 调用超时率 {{ $value | humanizePercentage }}，可能需要检查网络或模型状态。"
+
+          # 小时 Token 消耗超过 50 万
+          - alert: TokenBudgetExceeded
+            expr: |
+              sum(increase(llm_token_usage_total[1h])) > 500000
+            labels:
+              severity: warning
+            annotations:
+              summary: "小时 Token 消耗超过 50 万"
+              description: "过去 1 小时 Token 消耗量: {{ $value }}，可能存在异常使用或成本超支风险。"
+
+          # LLM 调用延迟过高（P99 > 30s）
+          - alert: LLMHighLatency
+            expr: |
+              histogram_quantile(0.99,
+                rate(llm_call_duration_seconds_bucket[5m])) > 30
+            for: 5m
+            labels:
+              severity: warning
+              service: model-router
+            annotations:
+              summary: "LLM P99 延迟超过 30 秒"
+              description: "LLM 调用 P99 延迟为 {{ $value }} 秒，影响用户体验。"
+
+          # 模型降级频率过高
+          - alert: ModelFallbackHigh
+            expr: |
+              rate(llm_model_fallback_total[5m]) > 0.3
+            for: 5m
+            labels:
+              severity: warning
+              service: model-router
+            annotations:
+              summary: "模型降级频率过高"
+              description: "主模型降级到备用模型的频率过高，每秒 {{ $value }} 次，可能主模型存在异常。"
+
+      # ============================================================
+      # Agent 编排相关告警
+      # ============================================================
+      - name: wanxiang-jimu-orchestrator
+        rules:
+          # 编排计划执行失败
+          - alert: OrchestrationPlanFailed
+            expr: |
+              rate(orchestration_plan_total{status="failed"}[5m])
+              / rate(orchestration_plan_total[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              service: agent-orchestrator
+            annotations:
+              summary: "编排计划失败率超过 5%"
+              description: "Agent 编排计划失败率 {{ $value | humanizePercentage }}，超过 5% 阈值。"
+
+          # 编排超时
+          - alert: OrchestrationTimeout
+            expr: |
+              rate(orchestration_plan_total{status="timeout"}[5m]) > 0.1
+            for: 3m
+            labels:
+              severity: warning
+              service: agent-orchestrator
+            annotations:
+              summary: "编排超时率过高"
+              description: "编排计划超时率为 {{ $value }} /秒，可能需要调整超时配置或检查下游服务。"
+
+          # 并发编排计划数接近上限
+          - alert: OrchestrationNearLimit
+            expr: |
+              orchestration_active_plans
+              / orchestration_max_concurrent_plans > 0.8
+            for: 5m
+            labels:
+              severity: warning
+              service: agent-orchestrator
+            annotations:
+              summary: "并发编排计划数接近上限"
+              description: "当前活跃编排计划数为 {{ $value }}，接近最大并发限制，可能需要扩容。"
+
+      # ============================================================
+      # RAG 服务相关告警
+      # ============================================================
+      - name: wanxiang-jimu-rag
+        rules:
+          # 向量检索延迟过高
+          - alert: RAGRetrievalSlow
+            expr: |
+              histogram_quantile(0.95,
+                rate(rag_retrieval_duration_seconds_bucket[5m])) > 2
+            for: 5m
+            labels:
+              severity: warning
+              service: rag-service
+            annotations:
+              summary: "RAG 检索 P95 延迟超过 2 秒"
+              description: "向量检索 P95 延迟为 {{ $value }} 秒，可能影响响应速度。"
+
+          # 文档解析失败
+          - alert: RAGParseFailure
+            expr: |
+              rate(rag_document_parse_total{status="failed"}[5m]) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+              service: rag-service
+            annotations:
+              summary: "文档解析失败率过高"
+              description: "文档解析失败率 {{ $value }} /秒，可能存在格式问题或解析器 bug。"
+
+      # ============================================================
+      # 工具沙箱相关告警
+      # ============================================================
+      - name: wanxiang-jimu-sandbox
+        rules:
+          # 沙箱执行超时
+          - alert: SandboxExecutionTimeout
+            expr: |
+              rate(sandbox_execution_total{status="timeout"}[5m]) > 0.2
+            for: 3m
+            labels:
+              severity: warning
+              service: tool-sandbox
+            annotations:
+              summary: "沙箱执行超时率过高"
+              description: "工具沙箱执行超时率 {{ $value }} /秒，可能需要优化代码或调整超时配置。"
+
+          # 沙箱资源耗尽
+          - alert: SandboxResourceExhausted
+            expr: |
+              rate(sandbox_execution_total{status="resource_exhausted"}[5m]) > 0.1
+            for: 3m
+            labels:
+              severity: warning
+              service: tool-sandbox
+            annotations:
+              summary: "沙箱资源耗尽"
+              description: "工具沙箱资源耗尽率 {{ $value }} /秒，可能需要增加资源限制或扩容。"
+
+      # ============================================================
+      # 基础设施告警
+      # ============================================================
+      - name: wanxiang-jimu-infrastructure
+        rules:
+          # PVC 使用率过高
+          - alert: PVCNearlyFull
+            expr: |
+              kubelet_volume_stats_used_bytes
+              / kubelet_volume_stats_capacity_bytes > 0.85
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "PVC 使用率超过 85% ({{ $labels.persistentvolumeclaim }})"
+              description: "PVC {{ $labels.persistentvolumeclaim }} 使用率 {{ $value | humanizePercentage }}，需要扩容。"
+
+          # 节点 CPU 使用率过高
+          - alert: NodeHighCPU
+            expr: |
+              100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]) * 100) > 85
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "节点 CPU 使用率超过 85% ({{ $labels.instance }})"
+              description: "节点 {{ $labels.instance }} CPU 使用率持续 10 分钟超过 85%。"
+
+          # 节点内存不足
+          - alert: NodeLowMemory
+            expr: |
+              node_memory_MemAvailable_bytes
+              / node_memory_MemTotal_bytes < 0.15
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "节点可用内存不足 15% ({{ $labels.instance }})"
+              description: "节点 {{ $labels.instance }} 可用内存仅 {{ $value | humanizePercentage }}，存在 OOM 风险。"
+
+          # HPA 达到最大副本数
+          - alert: HPAMaxReplicas
+            expr: |
+              kube_hpa_status_current_replicas
+              == kube_hpa_spec_max_replicas
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "HPA 达到最大副本数 ({{ $labels.hpa }})"
+              description: "HPA {{ $labels.hpa }} 已达到最大副本数 {{ $value }}，持续 15 分钟，可能需要增加上限。"
+
+          # Ingress 后端不可用
+          - alert: IngressBackendDown
+            expr: |
+              rate(traefik_service_requests_total{code=~"5.."}[5m]) > 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Ingress 后端服务异常"
+              description: "Traefik 路由 {{ $labels.service }} 返回 5xx 错误，持续 2 分钟。"

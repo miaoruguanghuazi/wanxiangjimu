@@ -1,0 +1,64 @@
+# =============================================================================
+# 万象积木 助手 — docker-compose.dev.yml
+# 开发模式：挂载源码目录，支持热重载
+# 使用方式：docker compose -f docker-compose.dev.yml up -d
+# =============================================================================
+
+services:
+  wanxiang-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wanxiang-ai-dev
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      HF_ENDPOINT: https://hf-mirror.com
+      # 开发模式：启用热重载
+      GRADIO_RELOAD: "true"
+    volumes:
+      # 挂载源码（修改即时生效）
+      - ./app.py:/app/app.py
+      - ./agent_orchestrator:/app/agent_orchestrator
+      - ./rag_pipeline:/app/rag_pipeline
+      - ./skill_market:/app/skill_market
+      - ./tools:/app/tools
+      - ./security:/app/security
+      - ./model_router:/app/model_router
+      - ./memory_system:/app/memory_system
+      - ./.env:/app/.env:ro
+      # 数据持久化
+      - chroma_data:/app/data/chroma
+      - uploads_data:/app/data/uploads
+      - hf_cache:/app/.cache/huggingface
+    command: >
+      python -u app.py
+    networks:
+      - wanxiang-dev
+
+  # 可选：Redis 用于 L2 短期记忆
+  redis:
+    image: redis:7-alpine
+    container_name: wanxiang-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    profiles:
+      - with-redis
+    networks:
+      - wanxiang-dev
+
+volumes:
+  chroma_data:
+  uploads_data:
+  hf_cache:
+  redis_data:
+
+networks:
+  wanxiang-dev:
+    driver: bridge

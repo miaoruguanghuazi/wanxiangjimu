@@ -1,0 +1,151 @@
+{{/*
+==============================================================================
+Agent Orchestrator — Deployment + Service + HPA
+Agent 编排核心服务，负责调度 Specialist Agent 执行任务
+==============================================================================
+*/}}
+{{- if .Values.agentOrchestrator.enabled -}}
+
+---
+# === Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-agent-orchestrator
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-orchestrator
+spec:
+  replicas: {{ .Values.agentOrchestrator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent-orchestrator
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent-orchestrator
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-global.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8004"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "wanxiang.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: orchestrator
+          image: {{ include "wanxiang.image" (list . .Values.agentOrchestrator.image.repository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: grpc
+              containerPort: 8004
+              protocol: TCP
+          env:
+            {{- toYaml .Values.agentOrchestrator.env | nindent 12 }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wanxiang-secrets
+                  key: redis-url
+          envFrom:
+            - configMapRef:
+                name: {{ include "wanxiang.fullname" . }}-global-config
+          resources:
+            {{- toYaml .Values.agentOrchestrator.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.agentOrchestrator.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.agentOrchestrator.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/wanxiang
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "wanxiang.fullname" . }}-global-config
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      affinity:
+        {{- include "wanxiang.podAntiAffinity" . | nindent 8 }}
+      {{- end }}
+
+---
+# === Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-agent-orchestrator
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-orchestrator
+spec:
+  type: {{ .Values.agentOrchestrator.service.type }}
+  ports:
+    - port: {{ .Values.agentOrchestrator.service.port }}
+      targetPort: {{ .Values.agentOrchestrator.service.targetPort }}
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-orchestrator
+
+{{- if .Values.agentOrchestrator.hpa.enabled }}
+---
+# === HPA — 自动扩缩 ===
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-agent-orchestrator
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-orchestrator
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wanxiang.fullname" . }}-agent-orchestrator
+  minReplicas: {{ .Values.agentOrchestrator.hpa.minReplicas }}
+  maxReplicas: {{ .Values.agentOrchestrator.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.agentOrchestrator.hpa.targetCPUUtilization }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}
+
+{{- end -}}

@@ -1,0 +1,107 @@
+# 万象积木 模型配置
+# 在此添加/修改模型配置，无需改动代码
+# 定价单位为 USD / 1M tokens
+
+models:
+  - model_id: deepseek-chat
+    litellm_model: deepseek/deepseek-chat
+    provider: deepseek
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 64000
+    max_output: 4096
+    pricing:
+      input: 0.14
+      output: 0.28
+    capabilities: [text, code, reasoning]
+    speed_tier: 2
+    quality_scores:
+      general_qa: 8
+      coding: 8
+      reasoning: 8
+      creative_writing: 7
+
+  - model_id: deepseek-coder
+    litellm_model: deepseek/deepseek-coder
+    provider: deepseek
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 64000
+    max_output: 4096
+    pricing:
+      input: 0.14
+      output: 0.28
+    capabilities: [text, code]
+    speed_tier: 2
+    quality_scores:
+      general_qa: 7
+      coding: 9
+      reasoning: 7
+      creative_writing: 6
+
+  - model_id: doubao-pro
+    litellm_model: doubao/{DOUBAO_ENDPOINT}
+    provider: volcengine
+    api_key_env: VOLC_API_KEY
+    condition: DOUBAO_ENDPOINT
+    context_window: 32000
+    max_output: 4096
+    pricing:
+      input: 0.11
+      output: 0.28
+    capabilities: [text, reasoning]
+    speed_tier: 1
+    quality_scores:
+      general_qa: 7
+      coding: 6
+      reasoning: 7
+      creative_writing: 7
+
+  - model_id: gpt-4o
+    litellm_model: gpt-4o
+    provider: openai
+    api_key_env: OPENAI_API_KEY
+    context_window: 128000
+    max_output: 4096
+    pricing:
+      input: 2.50
+      output: 10.00
+    capabilities: [text, code, reasoning, multimodal_vision]
+    speed_tier: 3
+    quality_scores:
+      general_qa: 9
+      coding: 9
+      reasoning: 9
+      creative_writing: 9
+
+  - model_id: gpt-35-turbo
+    litellm_model: gpt-3.5-turbo
+    provider: openai
+    api_key_env: OPENAI_API_KEY
+    context_window: 16000
+    max_output: 4096
+    pricing:
+      input: 0.50
+      output: 1.50
+    capabilities: [text, code]
+    speed_tier: 1
+    quality_scores:
+      general_qa: 7
+      coding: 7
+      reasoning: 6
+      creative_writing: 7
+
+  - model_id: qwen-plus
+    litellm_model: dashscope/qwen-plus
+    provider: aliyun
+    api_key_env: DASHSCOPE_API_KEY
+    context_window: 128000
+    max_output: 4096
+    pricing:
+      input: 0.40
+      output: 1.20
+    capabilities: [text, code, reasoning]
+    speed_tier: 2
+    quality_scores:
+      general_qa: 8
+      coding: 7
+      reasoning: 8
+      creative_writing: 8

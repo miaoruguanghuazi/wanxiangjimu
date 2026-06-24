@@ -1,0 +1,105 @@
+{{/*
+==============================================================================
+RAG Service — Deployment + Service
+文档解析 + 向量检索服务
+==============================================================================
+*/}}
+{{- if .Values.ragService.enabled -}}
+
+---
+# === Deployment ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-rag-service
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-service
+spec:
+  replicas: {{ .Values.ragService.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wanxiang.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: rag-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "wanxiang.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: rag-service
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-global.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8005"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "wanxiang.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "wanxiang.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: rag-service
+          image: {{ include "wanxiang.image" (list . .Values.ragService.image.repository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "wanxiang.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8005
+              protocol: TCP
+          env:
+            {{- toYaml .Values.ragService.env | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "wanxiang.fullname" . }}-global-config
+          resources:
+            {{- toYaml .Values.ragService.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.ragService.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.ragService.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: document-cache
+              mountPath: /var/cache/wanxiang-docs
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: document-cache
+          emptyDir:
+            sizeLimit: 5Gi
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      affinity:
+        {{- include "wanxiang.podAntiAffinity" . | nindent 8 }}
+      {{- end }}
+
+---
+# === Service ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-rag-service
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-service
+spec:
+  type: {{ .Values.ragService.service.type }}
+  ports:
+    - port: {{ .Values.ragService.service.port }}
+      targetPort: {{ .Values.ragService.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "wanxiang.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-service
+
+{{- end -}}

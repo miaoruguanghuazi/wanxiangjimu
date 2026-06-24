@@ -1,0 +1,20 @@
+{{/*
+==============================================================================
+命名空间 — 万象积木
+==============================================================================
+*/}}
+{{- if .Values.namespace.create -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+    # 用于 NetworkPolicy 的命名空间选择器
+    name: {{ include "wanxiang.namespace" . }}
+    # 用于 Istio/Linkerd 服务网格注入
+    istio-injection: {{ .Values.global.serviceMesh.enabled | quote }}
+spec:
+  finalizers:
+    - kubernetes
+{{- end -}}

@@ -1,0 +1,77 @@
+{{/*
+==============================================================================
+ConfigMap — 全局配置
+万象积木所有服务共享的配置项
+==============================================================================
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wanxiang.fullname" . }}-global-config
+  namespace: {{ include "wanxiang.namespace" . }}
+  labels:
+    {{- include "wanxiang.labels" . | nindent 4 }}
+data:
+  # === 基础配置 ===
+  APP_ENV: {{ .Values.global.environment | quote }}
+  LOG_LEVEL: {{ .Values.global.logLevel | quote }}
+  TENANT_MODE: {{ .Values.global.tenantMode | quote }}
+
+  # === 服务发现 ===
+  API_SERVER_URL: "http://{{ include "wanxiang.fullname" . }}-api-server:8000"
+  GATEWAY_URL: "http://{{ include "wanxiang.fullname" . }}-gateway:8001"
+  NLU_SERVICE_URL: "http://{{ include "wanxiang.fullname" . }}-nlu-service:8002"
+  MODEL_ROUTER_URL: "http://{{ include "wanxiang.fullname" . }}-model-router:8003"
+  AGENT_ORCHESTRATOR_URL: "http://{{ include "wanxiang.fullname" . }}-agent-orchestrator:8004"
+  RAG_SERVICE_URL: "http://{{ include "wanxiang.fullname" . }}-rag-service:8005"
+  EMBEDDING_SERVICE_URL: "http://{{ include "wanxiang.fullname" . }}-embedding-service:8006"
+  SD_SERVICE_URL: "http://{{ include "wanxiang.fullname" . }}-sd-service:8007"
+  TOOL_SANDBOX_URL: "http://{{ include "wanxiang.fullname" . }}-tool-sandbox:8008"
+  SKILL_RUNTIME_URL: "http://{{ include "wanxiang.fullname" . }}-skill-runtime:8009"
+
+  # === 可观测性 ===
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ printf "http://%s-otel-collector:4317" (include "wanxiang.fullname" .) | quote }}
+  OTEL_SERVICE_NAMESPACE: {{ include "wanxiang.namespace" . | quote }}
+  JAEGER_ENDPOINT: {{ printf "http://%s-jaeger-collector:14268/api/traces" (include "wanxiang.fullname" .) | quote }}
+  PROMETHEUS_URL: {{ printf "http://%s-prometheus:9090" (include "wanxiang.fullname" .) | quote }}
+
+  # === 模型配置 ===
+  DEFAULT_LLM_MODEL: "gpt-4o"
+  FALLBACK_LLM_MODELS: "glm-4,deepseek-v3,qwen-max"
+  LLM_MAX_TOKENS: "4096"
+  LLM_TEMPERATURE: "0.7"
+  LLM_TIMEOUT_SECONDS: "30"
+
+  # === 编排配置 ===
+  ORCHESTRATION_MODE_DEFAULT: "auto"
+  MAX_PARALLEL_AGENTS: "5"
+  TASK_TIMEOUT_SECONDS: "120"
+  HUMAN_APPROVAL_TIMEOUT: "3600"
+
+  # === RAG 配置 ===
+  RAG_TOP_K: "5"
+  RAG_SIMILARITY_THRESHOLD: "0.75"
+  RAG_CHUNK_SIZE: "512"
+  RAG_CHUNK_OVERLAP: "50"
+  EMBEDDING_MODEL: "BAAI/bge-large-zh-v1.5"
+  EMBEDDING_DIMENSION: "1024"
+
+  # === 限流配置 ===
+  RATE_LIMIT_PER_MINUTE: "60"
+  RATE_LIMIT_BURST: "10"
+  CONCURRENT_REQUEST_LIMIT: "100"
+
+  # === 安全配置 ===
+  CORS_ORIGINS: "https://wanxiang.ai,https://app.wanxiang.ai"
+  JWT_ALGORITHM: "HS256"
+  JWT_EXPIRE_MINUTES: "1440"
+
+  # === 缓存配置 ===
+  CACHE_TTL_SECONDS: "300"
+  CACHE_MAX_SIZE: "10000"
+
+  # === 日志配置 ===
+  LOG_FORMAT: "json"
+  LOG_MAX_SIZE_MB: "100"
+  LOG_MAX_BACKUPS: "5"
+  LOG_MAX_AGE_DAYS: "7"

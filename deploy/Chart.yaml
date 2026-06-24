@@ -1,0 +1,36 @@
+apiVersion: v2
+name: wanxiang-jimu
+description: 万象积木 — Helm Chart for K3s 生产环境部署
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - llm
+  - agent
+  - rag
+  - k3s
+home: https://github.com/wanxiang-jimu/wanxiang-jimu
+sources:
+  - https://github.com/wanxiang-jimu/wanxiang-jimu
+maintainers:
+  - name: WanXiang AI Team
+    email: devops@wanxiang.ai
+icon: https://webcdn.m.qq.com/qclaw/agent0507/11/agent/tup/Python全栈工程师.png
+# 依赖的可观测性子 chart（可选，生产环境启用）
+dependencies:
+  - name: prometheus
+    version: "25.x.x"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: observability.prometheus.enabled
+    optional: true
+  - name: grafana
+    version: "8.x.x"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: observability.grafana.enabled
+    optional: true
+  - name: jaeger
+    version: "3.x.x"
+    repository: "https://jaegertracing.github.io/helm-charts"
+    condition: observability.jaeger.enabled
+    optional: true
